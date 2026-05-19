@@ -1,0 +1,252 @@
+% ============================================================
+% MODULES 4 ET 5
+% ============================================================
+\chapter{Modules 4 et 5 : Classification et Interface}
+
+\section{Module 4 : Entraînement et Classification}
+
+\subsection{Dataset Utilisé}
+
+Le modèle est entraîné sur le dataset \textbf{ASL Alphabet} de Kaggle\footnote{\url{https://www.kaggle.com/datasets/grassknoted/asl-alphabet}}, contenant :
+\begin{itemize}
+    \item 87\,000 images (3\,000 par classe)
+    \item 29 classes : A--Z + \texttt{del}, \texttt{nothing}, \texttt{space}
+    \item Résolution : 200$\times$200 pixels
+\end{itemize}
+
+Après extraction des landmarks via MediaPipe, nous obtenons \textbf{63\,580 échantillons valides} (certaines images ne contiennent pas de main détectable) répartis sur 28 classes (la classe \texttt{nothing} est filtrée car elle ne contient pas de main).
+
+\subsection{Pipeline d'Entraînement}
+
+Le processus d'entraînement suit les étapes suivantes :
+
+\begin{enumerate}
+    \item Extraction des caractéristiques 78-dim de chaque image via MediaPipe.
+    \item Cache des features dans un fichier \texttt{.npz} pour réutilisation.
+    \item Division train/validation (80\%/20\%) avec stratification.
+    \item Entraînement du modèle MobileNetV3-Small.
+    \item Quantification et export TFLite.
+\end{enumerate}
+
+\subsection{Architecture MobileNetV3-Small (Signes Statiques)}
+
+Le modèle pour les signes statiques s'inspire de MobileNetV3-Small avec un bloc Squeeze-and-Excite (SE) :
+
+\begin{lstlisting}[style=python, caption={Architecture MobileNetV3-Small adaptée}]
+def build_static_model(num_classes):
+    inputs = keras.Input(shape=(78,))
+    x = keras.layers.Dense(256, activation="relu")(inputs)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Dropout(0.3)(x)
+    x = keras.layers.Dense(128, activation="relu")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Dropout(0.3)(x)
+    # Bloc Squeeze-and-Excite (MobileNetV3-style)
+    x = keras.layers.Dense(64, activation="hard_swish")(x)
+    se = keras.layers.Dense(16, activation="relu")(x)
+    se = keras.layers.Dense(64, activation="sigmoid")(se)
+    x = keras.layers.Multiply()([x, se])
+    outputs = keras.layers.Dense(num_classes,
+                                 activation="softmax")(x)
+    return keras.Model(inputs, outputs)
+\end{lstlisting}
+
+\subsection{Modèles Dynamiques (Signes Dynamiques)}
+
+Pour les gestes dynamiques (mots), trois architectures sont comparées :
+
+\subsubsection{LSTM (2 couches, 128 neurones)}
+
+\begin{lstlisting}[style=python, caption={Architecture LSTM}]
+def build_lstm_model(num_classes, seq_len=30):
+    inputs = keras.Input(shape=(seq_len, 78))
+    x = keras.layers.LSTM(128, return_sequences=True)(inputs)
+    x = keras.layers.LSTM(128)(x)
+    x = keras.layers.Dropout(0.3)(x)
+    outputs = keras.layers.Dense(num_classes,
+                                 activation="softmax")(x)
+    return keras.Model(inputs, outputs)
+\end{lstlisting}
+
+\subsubsection{GRU (Alternative légère)}
+
+Le GRU (Gated Recurrent Unit) offre des performances similaires au LSTM avec moins de paramètres :
+
+\begin{lstlisting}[style=python, caption={Architecture GRU}]
+def build_gru_model(num_classes, seq_len=30):
+    inputs = keras.Input(shape=(seq_len, 78))
+    x = keras.layers.GRU(128, return_sequences=True)(inputs)
+    x = keras.layers.GRU(128)(x)
+    x = keras.layers.Dropout(0.3)(x)
+    outputs = keras.layers.Dense(num_classes,
+                                 activation="softmax")(x)
+    return keras.Model(inputs, outputs)
+\end{lstlisting}
+
+\subsubsection{Transformer Miniature (1D)}
+
+Un Transformer miniature avec attention multi-têtes pour capturer les dépendances temporelles :
+
+\begin{lstlisting}[style=python, caption={Architecture Transformer 1D}]
+def build_transformer_model(num_classes, seq_len=30,
+                            d_model=64, num_heads=4):
+    inputs = keras.Input(shape=(seq_len, 78))
+    x = keras.layers.Dense(d_model)(inputs)
+    # Encodage positionnel appris
+    pos_emb = keras.layers.Embedding(seq_len, d_model)(
+        tf.range(seq_len))
+    x = x + pos_emb
+    # Bloc Transformer
+    attn = keras.layers.MultiHeadAttention(
+        num_heads=num_heads,
+        key_dim=d_model // num_heads)(x, x)
+    x = keras.layers.LayerNormalization()(x + attn)
+    ff = keras.layers.Dense(d_model * 2, activation="relu")(x)
+    ff = keras.layers.Dense(d_model)(ff)
+    x = keras.layers.LayerNormalization()(x + ff)
+    x = keras.layers.GlobalAveragePooling1D()(x)
+    outputs = keras.layers.Dense(num_classes,
+                                 activation="softmax")(x)
+    return keras.Model(inputs, outputs)
+\end{lstlisting}
+
+\subsection{Quantification des Modèles}
+
+Trois niveaux de quantification sont comparés pour optimiser le compromis vitesse/précision :
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{Mode} & \textbf{Taille} & \textbf{Vitesse} & \textbf{Précision} \\
+        \midrule
+        FP32 & 260 Ko & Référence & Maximale \\
+        FP16 & 138 Ko & $\times$1.5 & $\approx$ FP32 \\
+        INT8 & 86 Ko & $\times$2--3 & Légère perte \\
+        \bottomrule
+    \end{tabular}
+    \caption{Comparaison des modes de quantification}
+\end{table}
+
+\begin{lstlisting}[style=python, caption={Quantification TFLite}]
+def quantize_model(model, mode="INT8", representative_data=None):
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    if mode == "INT8":
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        converter.representative_dataset = rep_gen
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+    elif mode == "FP16":
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        converter.target_spec.supported_types = [tf.float16]
+    return converter.convert()
+\end{lstlisting}
+
+\subsection{Élagage Structurel (Pruning)}
+
+L'élagage par magnitude supprime les poids les plus faibles du réseau, réduisant la taille et accélérant l'inférence :
+
+\begin{lstlisting}[style=python, caption={Élagage par magnitude}]
+def apply_structural_pruning(model, pruning_ratio=0.3):
+    for layer in model.layers:
+        weights = layer.get_weights()
+        pruned = []
+        for w in weights:
+            threshold = np.percentile(np.abs(w),
+                                      pruning_ratio * 100)
+            w[np.abs(w) < threshold] = 0.0
+            pruned.append(w)
+        if pruned:
+            layer.set_weights(pruned)
+    return model
+\end{lstlisting}
+
+\subsection{Comparaison des Types de Caractéristiques}
+
+Une évaluation comparative est effectuée entre :
+\begin{itemize}
+    \item \textbf{Angles seuls} (15 dimensions) : Précision = 90.99\%
+    \item \textbf{Coordonnées seules} (63 dimensions) : Précision = 98.91\%
+    \item \textbf{Combinaison} (78 dimensions) : Précision maximale
+\end{itemize}
+
+Les coordonnées normalisées apportent significativement plus d'information discriminante que les angles seuls.
+
+% ============================================================
+\section{Module 5 : Interface d'Accessibilité}
+
+\subsection{Synthèse Vocale (TTS)}
+
+La synthèse vocale utilise \texttt{pyttsx3} avec le backend \texttt{espeak-ng} pour vocaliser les signes reconnus. Un mécanisme de déduplication évite de répéter le même mot :
+
+\begin{lstlisting}[style=python, caption={Synthèse vocale threadée}]
+class TTSEngine:
+    def __init__(self):
+        self._engine = pyttsx3.init()
+        self._engine.setProperty("rate", 150)
+        self._last_spoken = ""
+
+    def speak(self, text):
+        if text == self._last_spoken or not text:
+            return
+        self._last_spoken = text
+        threading.Thread(target=self._say,
+                        args=(text,), daemon=True).start()
+\end{lstlisting}
+
+\subsection{Flux MJPEG (Flask)}
+
+Un serveur Flask expose un flux vidéo MJPEG accessible via navigateur, avec superposition des landmarks et du texte de traduction :
+
+\begin{lstlisting}[style=python, caption={Serveur Flask MJPEG}]
+class StreamServer:
+    def __init__(self):
+        self.app = Flask(__name__)
+
+    def _generate(self):
+        while True:
+            frame = self._frame
+            if frame is None:
+                time.sleep(0.03)
+                continue
+            _, jpeg = cv2.imencode(".jpg", frame,
+                [cv2.IMWRITE_JPEG_QUALITY, 70])
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n"
+                   + jpeg.tobytes() + b"\r\n")
+\end{lstlisting}
+
+Le flux est accessible à l'adresse \texttt{http://localhost:5000/stream}.
+
+\subsection{Publication MQTT}
+
+Les prédictions sont publiées sur un broker MQTT local (Mosquitto) au format JSON pour l'intégration IoT :
+
+\begin{lstlisting}[style=python, caption={Publication MQTT}]
+class MQTTPublisher:
+    def publish(self, prediction, confidence):
+        payload = f'{{"sign":"{prediction}",'
+                  f'"confidence":{confidence:.3f},'
+                  f'"timestamp":{time.time()}}}'
+        self._client.publish("lsf/predictions", payload)
+\end{lstlisting}
+
+\subsection{Panneau de Traduction Local}
+
+L'interface locale affiche un panneau de texte accumulant les lettres reconnues en mots et phrases. Un mécanisme de stabilisation requiert 15 frames consécutives avec la même prédiction avant d'accepter un caractère :
+
+\begin{lstlisting}[style=python, caption={Accumulation de texte}]
+if prediction == self._current_pred:
+    self._current_count += 1
+else:
+    self._current_pred = prediction
+    self._current_count = 1
+
+if self._current_count == 15:  # Seuil de stabilite
+    if prediction == "space":
+        self._sentence += " "
+    elif prediction == "del":
+        self._sentence = self._sentence[:-1]
+    else:
+        self._sentence += prediction
+\end{lstlisting}

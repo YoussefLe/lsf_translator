@@ -1,0 +1,218 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{tikz}
+\usepackage{multicol}
+\usepackage{array}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\scriptsize,
+    breaklines=true,
+    numbers=left,
+    numbersep=3pt,
+    tabsize=2,
+    language=Python
+}
+
+\begin{document}
+
+% ===== PAGE DE GARDE =====
+\begin{titlepage}
+    \thispagestyle{empty}
+    \includegraphics[scale=0.08]{logos/Logo_INPT.png}
+    \hspace{9cm}
+    \includegraphics[scale=0.1]{logos/Logo_ANRT.jpg}
+    \vspace{0.9cm}
+    \begin{center}
+        {\large \textsc{\textbf{Rapport De Projet}}}\\[0.3cm]
+        \vspace{1cm}
+        {\large \textsc{\textit{SESNUM INE2}}} \\[0.05cm]
+        \vspace{1cm}
+        \rule{\linewidth}{0.3mm} \\[0.4cm]
+        {\huge \textbf{Traducteur en Temps Réel de la Langue des Signes}} \\[0.25cm]
+        {\textbf{Vision par Ordinateur \& Intelligence Artificielle}} \\[0.25cm]
+        \rule{\linewidth}{0.3mm} \\[0.4cm]
+        \vspace{1cm}
+
+        \noindent
+        \begin{minipage}{0.9\textwidth}
+            \begin{flushleft} \large
+                \emph{Encadré Par :}\\
+                Professeur Esmail \textsc{Ahouzi}
+            \end{flushleft}
+        \end{minipage}\\[0.6cm]
+
+        {\large \textit{RÉALISÉ PAR :}}\\[0.5cm]
+
+        \begin{tabular}{@{} >{\large}l @{\quad} >{\large}l @{}}
+            LAMINE & \textsc{Youssef} \\
+            AFIF & \textsc{Ayoub} \\
+            Salioui & \textsc{Ilyass} \\
+        \end{tabular}
+
+        \vspace{0.5cm}
+        \includegraphics[scale=0.6]{logos/ZLAFA.png}
+
+        \textsc{Institut National des Postes et Télécommunications}
+
+        {\large 2025/2026}
+    \end{center}
+\end{titlepage}
+
+% ===== CONTENU =====
+\section{Introduction}
+
+Ce projet développe un traducteur temps réel de la Langue des Signes Française (LSF) utilisant la vision par ordinateur et l'intelligence artificielle. Le système fonctionne sur PC (webcam) et sur Raspberry Pi 4B (caméra Pi v2.1), reconnaissant 28 signes statiques (A--Z, del, space) avec une précision de \textbf{98.9\%}.
+
+L'architecture suit un pipeline modulaire en 5 étapes : acquisition vidéo, estimation de pose (MediaPipe), ingénierie des caractéristiques, classification (MobileNetV3-Small TFLite), et interface d'accessibilité (TTS, MJPEG, MQTT).
+
+\section{Architecture du Pipeline}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=2.2cm, auto,
+    block/.style={rectangle, draw, fill=blue!10, text width=2.8cm, text centered, rounded corners, minimum height=0.9cm, font=\small}]
+    \node[block] (acq) {1. Acquisition\\Webcam/PiCam};
+    \node[block, right of=acq, node distance=3.3cm] (pose) {2. Pose\\MediaPipe};
+    \node[block, right of=pose, node distance=3.3cm] (feat) {3. Features\\78-dim};
+    \node[block, right of=feat, node distance=3.3cm] (clf) {4. Classification\\TFLite};
+    \node[block, right of=clf, node distance=3.3cm] (out) {5. Interface\\TTS/MQTT};
+    \draw[->] (acq) -- (pose);
+    \draw[->] (pose) -- (feat);
+    \draw[->] (feat) -- (clf);
+    \draw[->] (clf) -- (out);
+\end{tikzpicture}
+\caption{Pipeline modulaire du traducteur LSF}
+\end{figure}
+
+\textbf{Module 1 -- Acquisition :} Capture threadée à 640$\times$480 @ 30 FPS avec buffer circulaire (\texttt{queue.Queue}) et détection de mouvement MOG2. Sur Pi : \texttt{Picamera2} avec driver libcamera natif.
+
+\textbf{Module 2 -- Estimation de Pose :} Extraction des 21 landmarks 3D par main via MediaPipe Hands (BlazePalm + tracking). Sur Pi : modèles TFLite directs (\texttt{palm\_detection\_lite} + \texttt{hand\_landmark\_lite}).
+
+\textbf{Module 3 -- Caractéristiques :} Vecteur 78-dim = 15 angles articulaires (invariant rotation) + 63 coordonnées normalisées au poignet (invariant translation/échelle). Fenêtre adaptative 15--45 frames pour gestes dynamiques.
+
+\textbf{Module 4 -- Classification :} MobileNetV3-Small avec bloc Squeeze-Excite, exporté en TFLite FP32/FP16/INT8. Comparaison LSTM/GRU/Transformer pour les gestes dynamiques.
+
+\textbf{Module 5 -- Interface :} Synthèse vocale (pyttsx3/espeak-ng), flux MJPEG Flask, publication MQTT JSON.
+
+\section{Ingénierie des Caractéristiques}
+
+Les 15 angles sont calculés par produit scalaire entre vecteurs osseux :
+\begin{equation}
+\theta_i = \arccos\left(\frac{\vec{BA} \cdot \vec{BC}}{|\vec{BA}| \cdot |\vec{BC}|}\right)
+\end{equation}
+
+Les 63 coordonnées sont normalisées par rapport au poignet et à la distance poignet--majeur :
+\begin{equation}
+\hat{p}_i = \frac{p_i - p_0}{|p_9 - p_0|}
+\end{equation}
+
+\section{Entraînement du Modèle}
+
+\textbf{Dataset :} ASL Alphabet (Kaggle) -- 87\,000 images, 29 classes, 3\,000/classe. Après extraction MediaPipe : 63\,580 échantillons valides sur 28 classes.
+
+\textbf{Modèle :} MobileNetV3-Small adapté (entrée 78-dim, bloc SE, softmax 28 classes). Entraînement avec early stopping et réduction du learning rate.
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Évaluation} & \textbf{Dimension} & \textbf{Précision} \\
+\midrule
+Angles seuls & 15 & 90.99\% \\
+Coordonnées seules & 63 & 98.91\% \\
+Combinaison (final) & 78 & 99.2\% \\
+\bottomrule
+\end{tabular}
+\quad
+\begin{tabular}{lcc}
+\toprule
+\textbf{Quantification} & \textbf{Taille} & \textbf{Réduction} \\
+\midrule
+FP32 & 260 Ko & -- \\
+FP16 & 138 Ko & $-47\%$ \\
+INT8 & 86 Ko & $-67\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Comparaison des caractéristiques (gauche) et quantifications (droite)}
+\end{table}
+
+L'élagage structurel (pruning à 30\%) réduit davantage la taille en mettant à zéro les poids de faible magnitude.
+
+\section{Déploiement Raspberry Pi 4B}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Composant} & \textbf{Spécification} \\
+\midrule
+Carte & Raspberry Pi 4 Model B, 4 Go RAM \\
+CPU & Quad-core Cortex-A72 @ 1.8 GHz \\
+Caméra & Pi Camera Module v2.1 (Sony IMX219) \\
+OS & Raspberry Pi OS Bookworm 64-bit \\
+Runtime & ai-edge-litert (TFLite, 4 threads) \\
+\bottomrule
+\end{tabular}
+\caption{Configuration matérielle du Raspberry Pi}
+\end{table}
+
+\textbf{Défis résolus :}
+\begin{itemize}\setlength\itemsep{0pt}
+    \item MediaPipe incompatible Python 3.13/ARM64 $\rightarrow$ utilisation directe des modèles TFLite
+    \item Pas de \texttt{tflite-runtime} pour Python 3.13 $\rightarrow$ package \texttt{ai-edge-litert}
+    \item Capture caméra $\rightarrow$ \texttt{Picamera2} (driver natif, format RGB888, faible latence)
+\end{itemize}
+
+\textbf{Performance :}
+\begin{table}[H]
+\centering\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Plateforme} & \textbf{Latence/frame} & \textbf{FPS} \\
+\midrule
+PC (webcam) & 20--30 ms & $\sim$35 \\
+Raspberry Pi 4B & 60--90 ms & $\sim$12 \\
+\bottomrule
+\end{tabular}
+\caption{Performance temps réel}
+\end{table}
+
+Le flux MJPEG est accessible à \texttt{http://<IP\_PI>:5000/stream} depuis tout appareil du réseau.
+
+\section{Conclusion}
+
+Le système atteint une précision de 98.9\% sur 28 signes statiques avec un fonctionnement temps réel sur PC ($\sim$35 FPS) et Raspberry Pi ($\sim$12 FPS). L'architecture modulaire permet une maintenance et une extension faciles.
+
+\textbf{Perspectives :} entraînement sur un dataset LSF natif, ajout de gestes dynamiques (mots), accélération via Coral USB TPU, et portage sur application mobile.
+
+\vspace{0.3cm}
+\noindent\textbf{Références :}
+\begin{enumerate}\setlength\itemsep{0pt}\small
+    \item Google MediaPipe Hands -- \url{https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker}
+    \item Howard et al., \textit{Searching for MobileNetV3}, ICCV 2019
+    \item ASL Alphabet Dataset -- \url{https://www.kaggle.com/datasets/grassknoted/asl-alphabet}
+    \item TensorFlow Lite Optimization -- \url{https://www.tensorflow.org/lite/performance/model_optimization}
+    \item Raspberry Pi Documentation -- \url{https://www.raspberrypi.com/documentation/}
+\end{enumerate}
+
+\end{document}

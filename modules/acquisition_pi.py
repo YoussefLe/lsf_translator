@@ -20,7 +20,7 @@ class CameraCapture:
         self._cam = Picamera2()
         config = self._cam.create_preview_configuration(
             main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"},
-            controls={"FrameRate": FPS},
+            buffer_count=4,
         )
         self._cam.configure(config)
         self._cam.start()

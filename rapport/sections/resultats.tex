@@ -1,0 +1,178 @@
+% ============================================================
+% RÉSULTATS ET CONCLUSION
+% ============================================================
+\chapter{Résultats et Évaluation}
+
+\section{Résultats de l'Entraînement}
+
+\subsection{Performance du Modèle Statique}
+
+Le modèle MobileNetV3-Small a été entraîné sur 63\,580 échantillons (28 classes) avec les résultats suivants :
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Métrique} & \textbf{Entraînement} & \textbf{Validation} \\
+        \midrule
+        Précision (Accuracy) & 99.2\% & 98.9\% \\
+        Perte (Loss) & 0.032 & 0.045 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Performance du modèle MobileNetV3-Small}
+\end{table}
+
+\subsection{Comparaison des Types de Caractéristiques}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Type de caractéristiques} & \textbf{Dimension} & \textbf{Précision} \\
+        \midrule
+        Angles articulaires seuls & 15 & 90.99\% \\
+        Coordonnées normalisées seules & 63 & 98.91\% \\
+        Combinaison (angles + coordonnées) & 78 & 99.2\% \\
+        \bottomrule
+    \end{tabular}
+    \caption{Comparaison des types de caractéristiques}
+\end{table}
+
+\textbf{Analyse} : Les coordonnées normalisées contiennent significativement plus d'information discriminante que les angles seuls (+8 points). La combinaison des deux apporte un gain marginal supplémentaire (+0.3 point), justifiant l'utilisation du vecteur complet de 78 dimensions.
+
+\subsection{Comparaison des Quantifications}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{Mode} & \textbf{Taille du modèle} & \textbf{Réduction} & \textbf{Précision} \\
+        \midrule
+        FP32 & 260 Ko & -- & 98.9\% \\
+        FP16 & 138 Ko & $-47\%$ & 98.9\% \\
+        INT8 & 86 Ko & $-67\%$ & $\sim$97\%* \\
+        \bottomrule
+    \end{tabular}
+    \caption{Comparaison des modes de quantification}
+    \label{tab:quant}
+\end{table}
+
+\small{*Note : Le modèle INT8 nécessite une gestion spécifique des entrées/sorties quantifiées. Le modèle FP32 est utilisé en production pour sa simplicité d'intégration.}
+
+\subsection{Extraction des Landmarks}
+
+Sur les 87\,000 images du dataset, MediaPipe a détecté une main dans 63\,580 images (73\% de taux de détection). Les classes avec le meilleur taux de détection sont celles avec des gestes ouverts (F: 95\%, K: 90\%), tandis que les gestes fermés sont plus difficiles (M: 53\%, N: 42\%).
+
+\section{Performance en Temps Réel}
+
+\subsection{Sur PC}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Étape} & \textbf{Temps moyen} \\
+        \midrule
+        Capture frame & $<$ 1 ms \\
+        MediaPipe Hands & 15--25 ms \\
+        Extraction caractéristiques & $<$ 1 ms \\
+        Inférence TFLite (FP32) & 1--2 ms \\
+        Affichage OpenCV & 2--3 ms \\
+        \midrule
+        \textbf{Total par frame} & \textbf{20--30 ms ($\sim$35 FPS)} \\
+        \bottomrule
+    \end{tabular}
+    \caption{Latence du pipeline sur PC}
+\end{table}
+
+\subsection{Sur Raspberry Pi 4B}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Étape} & \textbf{Temps moyen} \\
+        \midrule
+        Capture Picamera2 & 2--5 ms \\
+        Détection paume (TFLite) & 30--50 ms \\
+        Landmarks (TFLite) & 20--30 ms \\
+        Extraction caractéristiques & 1--2 ms \\
+        Inférence classification (FP16) & 3--5 ms \\
+        \midrule
+        \textbf{Total par frame} & \textbf{60--90 ms ($\sim$12 FPS)} \\
+        \bottomrule
+    \end{tabular}
+    \caption{Latence du pipeline sur Raspberry Pi 4B}
+\end{table}
+
+\section{Démonstration du Système}
+
+Le système en fonctionnement affiche :
+\begin{itemize}
+    \item La vidéo en direct avec les 21 landmarks superposés en vert.
+    \item Le signe détecté avec son pourcentage de confiance en jaune.
+    \item Un panneau de texte en bas accumulant les lettres en mots.
+    \item Commandes : \texttt{q} pour quitter, \texttt{c} pour effacer le texte.
+\end{itemize}
+
+% ============================================================
+\chapter{Conclusion et Perspectives}
+
+\section{Bilan}
+
+Ce projet a permis de développer un système complet de traduction de la Langue des Signes Française fonctionnant en temps réel sur deux plateformes :
+
+\begin{itemize}
+    \item \textbf{PC} : Pipeline fluide à $\sim$35 FPS avec une précision de 98.9\% sur 28 classes de signes statiques.
+    \item \textbf{Raspberry Pi 4B} : Déploiement embarqué fonctionnel à $\sim$12 FPS, suffisant pour une utilisation interactive.
+\end{itemize}
+
+Les objectifs initiaux ont été atteints :
+\begin{itemize}
+    \item[$\checkmark$] Architecture modulaire en 5 modules indépendants.
+    \item[$\checkmark$] Multithreading avec buffer circulaire et ThreadPoolExecutor.
+    \item[$\checkmark$] Comparaison LSTM/GRU/Transformer pour les gestes dynamiques.
+    \item[$\checkmark$] Quantification INT8/FP16/FP32 avec analyse comparative.
+    \item[$\checkmark$] Élagage structurel des poids.
+    \item[$\checkmark$] Interface d'accessibilité complète (TTS, MJPEG, MQTT).
+    \item[$\checkmark$] Déploiement sur Raspberry Pi 4B avec caméra Pi v2.1.
+\end{itemize}
+
+\section{Difficultés Rencontrées}
+
+\begin{enumerate}
+    \item \textbf{Compatibilité MediaPipe/Python 3.13} : Le package officiel ne supporte pas Python 3.13 sur ARM64, nécessitant l'utilisation directe des modèles TFLite.
+    \item \textbf{Quantification INT8} : Le modèle INT8 requiert des entrées/sorties en int8 avec des paramètres de quantification spécifiques, rendant l'intégration plus complexe.
+    \item \textbf{Détection de main} : Certains signes (M, N) avec les doigts repliés sont difficiles à détecter par MediaPipe (taux de détection $<$ 50\%).
+    \item \textbf{Dépendances Python} : Conflits entre \texttt{tensorflow-model-optimization} et \texttt{mediapipe} sur les versions d'\texttt{absl-py}.
+\end{enumerate}
+
+\section{Perspectives d'Amélioration}
+
+\begin{itemize}
+    \item \textbf{Dataset LSF natif} : Entraîner sur un dataset spécifique à la LSF (différente de l'ASL) pour une meilleure pertinence.
+    \item \textbf{Gestes dynamiques} : Collecter et entraîner sur des séquences de mots LSF complets.
+    \item \textbf{Accélération matérielle} : Utiliser un accélérateur Coral USB TPU sur le Pi pour atteindre 30+ FPS.
+    \item \textbf{Reconnaissance continue} : Implémenter un modèle CTC (Connectionist Temporal Classification) pour la reconnaissance de phrases complètes.
+    \item \textbf{Application mobile} : Porter le système sur Android/iOS via TFLite et la caméra du smartphone.
+    \item \textbf{Feedback haptique} : Ajouter un retour vibrotactile pour confirmer la reconnaissance aux utilisateurs sourds.
+\end{itemize}
+
+% ============================================================
+\chapter*{Références}
+\addcontentsline{toc}{chapter}{Références}
+
+\begin{enumerate}
+    \item Google MediaPipe -- Hand Landmarks Detection. \url{https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker}
+    \item Howard, A. et al. \textit{Searching for MobileNetV3}. ICCV 2019.
+    \item Hochreiter, S. \& Schmidhuber, J. \textit{Long Short-Term Memory}. Neural Computation, 1997.
+    \item Cho, K. et al. \textit{Learning Phrase Representations using RNN Encoder-Decoder}. EMNLP 2014.
+    \item Vaswani, A. et al. \textit{Attention Is All You Need}. NeurIPS 2017.
+    \item ASL Alphabet Dataset -- Kaggle. \url{https://www.kaggle.com/datasets/grassknoted/asl-alphabet}
+    \item TensorFlow Lite -- Model Optimization. \url{https://www.tensorflow.org/lite/performance/model_optimization}
+    \item Raspberry Pi Documentation. \url{https://www.raspberrypi.com/documentation/}
+    \item Picamera2 Library. \url{https://github.com/raspberrypi/picamera2}
+    \item MQTT Protocol -- Eclipse Mosquitto. \url{https://mosquitto.org/}
+    \item Flask Web Framework. \url{https://flask.palletsprojects.com/}
+    \item pyttsx3 -- Text-to-Speech. \url{https://pyttsx3.readthedocs.io/}
+\end{enumerate}

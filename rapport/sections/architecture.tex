@@ -1,0 +1,83 @@
+% ============================================================
+% ARCHITECTURE DÉTAILLÉE
+% ============================================================
+\chapter{Architecture et Conception}
+
+\section{Diagramme de Flux de Données}
+
+Le pipeline de traitement suit un modèle producteur/consommateur avec des threads dédiés pour chaque étape critique. Le flux de données est le suivant :
+
+\begin{enumerate}
+    \item La caméra capture des frames à 30 FPS dans un thread dédié.
+    \item Les frames sont stockées dans un buffer circulaire thread-safe (\texttt{queue.Queue}).
+    \item Le thread principal consomme les frames et les passe au module de pose estimation.
+    \item Les landmarks extraits sont transformés en vecteurs de caractéristiques de dimension 78.
+    \item La classification est effectuée en parallèle (statique + dynamique) via \texttt{concurrent.futures}.
+    \item Les résultats sont affichés localement et diffusés via les interfaces d'accessibilité.
+\end{enumerate}
+
+\section{Gestion du Multithreading}
+
+L'architecture exploite le parallélisme à plusieurs niveaux :
+
+\begin{itemize}
+    \item \textbf{Thread de capture} : Un thread daemon dédié à l'acquisition vidéo, découplé du traitement pour éviter le blocage.
+    \item \textbf{ThreadPoolExecutor} : Utilisation de \texttt{concurrent.futures.ThreadPoolExecutor} avec un nombre de workers égal au nombre de cœurs CPU pour la classification parallèle.
+    \item \textbf{Thread TTS} : La synthèse vocale s'exécute dans un thread séparé pour ne pas bloquer le pipeline principal.
+    \item \textbf{Thread Flask} : Le serveur MJPEG tourne dans un thread daemon indépendant.
+\end{itemize}
+
+\section{Structure du Projet}
+
+\begin{lstlisting}[style=python, caption={Arborescence du projet}]
+lsf_translator/
+|-- config.py                  # Configuration globale
+|-- main.py                    # Pipeline complet (PC)
+|-- main_local.py              # Version locale sans reseau
+|-- main_pi.py                 # Version Raspberry Pi
+|-- train_asl.py               # Entrainement avec dataset ASL
+|-- collect_data.py            # Collecte de donnees webcam
+|-- requirements.txt           # Dependances PC
+|-- requirements_pi.txt        # Dependances Raspberry Pi
+|-- models/                    # Modeles TFLite entraines
+|   |-- static_mobilenetv3_fp32.tflite
+|   |-- static_mobilenetv3_fp16.tflite
+|   |-- static_mobilenetv3_int8.tflite
+|   |-- labels.npy
+|   +-- hand_landmarker.task
++-- modules/
+    |-- acquisition.py         # Module 1 : Capture PC
+    |-- acquisition_pi.py      # Module 1 : Capture Pi
+    |-- pose_estimation.py     # Module 2 : MediaPipe (PC)
+    |-- pose_estimation_pi.py  # Module 2 : TFLite (Pi)
+    |-- feature_engineering.py # Module 3 : Caracteristiques
+    |-- model_training.py      # Module 4 : Entrainement
+    +-- accessibility.py       # Module 5 : TTS/Flask/MQTT
+\end{lstlisting}
+
+\section{Configuration Globale}
+
+Le fichier \texttt{config.py} centralise tous les paramètres du système :
+
+\begin{lstlisting}[style=python, caption={Paramètres de configuration}]
+CAMERA_ID = 0
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+FPS = 30
+BUFFER_SIZE = 64
+
+NUM_LANDMARKS = 21
+STATIC_FEATURE_DIM = 78
+SEQUENCE_LENGTH = 30
+MIN_WINDOW = 15
+MAX_WINDOW = 45
+
+LSTM_UNITS = 128
+BATCH_SIZE = 32
+EPOCHS = 50
+
+FLASK_PORT = 5000
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TOPIC = "lsf/predictions"
+\end{lstlisting}

@@ -1,0 +1,251 @@
+% ============================================================
+% MODULES 1 À 3
+% ============================================================
+\chapter{Modules 1 à 3 : Acquisition, Pose et Caractéristiques}
+
+\section{Module 1 : Acquisition Vidéo}
+
+\subsection{Objectif}
+
+Le module d'acquisition est responsable de la capture vidéo en temps réel à une résolution de 640$\times$480 pixels et 30 images par seconde. Il implémente un pattern producteur/consommateur avec un buffer circulaire thread-safe pour découpler la capture du traitement.
+
+\subsection{Implémentation}
+
+\subsubsection{Buffer Circulaire Thread-Safe}
+
+Le buffer utilise \texttt{queue.Queue} de Python avec une taille maximale de 64 frames. Lorsque le buffer est plein, la frame la plus ancienne est supprimée pour faire place à la nouvelle :
+
+\begin{lstlisting}[style=python, caption={Buffer circulaire avec queue.Queue}]
+class CameraCapture:
+    def __init__(self):
+        self.buffer = queue.Queue(maxsize=BUFFER_SIZE)
+        self._running = False
+        self._thread = None
+
+    def _capture_loop(self):
+        while self._running:
+            ret, frame = self._cap.read()
+            if not ret:
+                continue
+            motion = self.motion_detector.detect(frame)
+            if self.buffer.full():
+                try:
+                    self.buffer.get_nowait()
+                except queue.Empty:
+                    pass
+            self.buffer.put((frame, motion))
+\end{lstlisting}
+
+\subsubsection{Détection de Mouvement MOG2}
+
+Pour économiser les cycles CPU/GPU, un détecteur de mouvement basé sur la soustraction d'arrière-plan MOG2 (Mixture of Gaussians) est intégré. Le pipeline de classification n'est déclenché que lorsqu'un mouvement de main est détecté :
+
+\begin{lstlisting}[style=python, caption={Détecteur de mouvement MOG2}]
+class MotionDetector:
+    def __init__(self, history=100, threshold=25, min_area=500):
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=history, varThreshold=threshold,
+            detectShadows=False
+        )
+        self.min_area = min_area
+
+    def detect(self, frame):
+        mask = self.bg_subtractor.apply(frame)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
+                                np.ones((3, 3), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        return any(cv2.contourArea(c) > self.min_area
+                   for c in contours)
+\end{lstlisting}
+
+\subsection{Adaptation Raspberry Pi}
+
+Sur le Raspberry Pi 4B, le module utilise \texttt{Picamera2} au lieu d'OpenCV pour la capture, exploitant le driver natif de la caméra Pi v2.1 :
+
+\begin{lstlisting}[style=python, caption={Capture avec Picamera2}]
+from picamera2 import Picamera2
+
+class CameraCapture:
+    def start(self):
+        self._cam = Picamera2()
+        config = self._cam.create_preview_configuration(
+            main={"size": (640, 480), "format": "RGB888"},
+            controls={"FrameRate": 30},
+        )
+        self._cam.configure(config)
+        self._cam.start()
+\end{lstlisting}
+
+% ============================================================
+\section{Module 2 : Estimation de Pose}
+
+\subsection{Objectif}
+
+Ce module extrait les 21 landmarks 3D (coordonnées $x$, $y$, $z$ normalisées) de chaque main détectée dans l'image. Il utilise le pipeline MediaPipe Hands qui combine :
+
+\begin{itemize}
+    \item \textbf{BlazePalm} : Détection initiale de la paume dans l'image complète.
+    \item \textbf{Hand Landmark Model} : Estimation précise des 21 points clés sur la région de la main détectée.
+    \item \textbf{Tracking} : Suivi frame-par-frame léger pour éviter de relancer la détection à chaque image.
+\end{itemize}
+
+\subsection{Les 21 Landmarks}
+
+Les 21 points correspondent aux articulations anatomiques de la main :
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{cl|cl}
+        \toprule
+        \textbf{ID} & \textbf{Articulation} & \textbf{ID} & \textbf{Articulation} \\
+        \midrule
+        0 & Poignet & 11 & Majeur -- PIP \\
+        1 & Pouce -- CMC & 12 & Majeur -- DIP \\
+        2 & Pouce -- MCP & 13 & Annulaire -- MCP \\
+        3 & Pouce -- IP & 14 & Annulaire -- PIP \\
+        4 & Pouce -- Bout & 15 & Annulaire -- DIP \\
+        5 & Index -- MCP & 16 & Annulaire -- Bout \\
+        6 & Index -- PIP & 17 & Auriculaire -- MCP \\
+        7 & Index -- DIP & 18 & Auriculaire -- PIP \\
+        8 & Index -- Bout & 19 & Auriculaire -- DIP \\
+        9 & Majeur -- MCP & 20 & Auriculaire -- Bout \\
+        10 & Majeur -- PIP & & \\
+        \bottomrule
+    \end{tabular}
+    \caption{Les 21 landmarks de la main MediaPipe}
+\end{table}
+
+\subsection{Implémentation PC (API Task)}
+
+Sur PC, nous utilisons la nouvelle API task-based de MediaPipe (version 0.10.35+) :
+
+\begin{lstlisting}[style=python, caption={Estimation de pose -- API Task (PC)}]
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+class PoseEstimator:
+    def __init__(self, max_hands=1, min_detection_conf=0.5):
+        options = vision.HandLandmarkerOptions(
+            base_options=python.BaseOptions(
+                model_asset_path=MODEL_PATH),
+            running_mode=vision.RunningMode.IMAGE,
+            num_hands=max_hands,
+            min_hand_detection_confidence=min_detection_conf,
+        )
+        self.landmarker = vision.HandLandmarker \
+            .create_from_options(options)
+
+    def extract(self, frame_rgb):
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        result = self.landmarker.detect(mp_image)
+        if not result.hand_landmarks:
+            return []
+        hands = []
+        for hand in result.hand_landmarks:
+            landmarks = np.array(
+                [[lm.x, lm.y, lm.z] for lm in hand],
+                dtype=np.float32)
+            hands.append(landmarks)
+        return hands
+\end{lstlisting}
+
+\subsection{Implémentation Raspberry Pi (TFLite Direct)}
+
+Sur le Raspberry Pi, MediaPipe Python n'étant pas compatible avec Python 3.13 sur ARM64, nous utilisons directement les modèles TFLite de détection de paume et de landmarks :
+
+\begin{lstlisting}[style=python, caption={Estimation de pose -- TFLite direct (Pi)}]
+# Modeles telecharges depuis Google Storage
+PALM_URL = "https://storage.googleapis.com/mediapipe-assets/
+    palm_detection_lite.tflite"
+LANDMARK_URL = "https://storage.googleapis.com/mediapipe-assets/
+    hand_landmark_lite.tflite"
+
+class PoseEstimator:
+    def __init__(self):
+        self.palm_interp = _load_interpreter(PALM_MODEL_PATH)
+        self.lm_interp = _load_interpreter(LANDMARK_MODEL_PATH)
+
+    def extract(self, frame_rgb):
+        bbox = self._detect_palm(frame_rgb)
+        if bbox is None:
+            return []
+        landmarks = self._get_landmarks(frame_rgb, bbox)
+        return [landmarks] if landmarks is not None else []
+\end{lstlisting}
+
+% ============================================================
+\section{Module 3 : Ingénierie des Caractéristiques}
+
+\subsection{Objectif}
+
+Ce module transforme les 21 landmarks bruts en un vecteur de caractéristiques de dimension 78, conçu pour être :
+\begin{itemize}
+    \item \textbf{Invariant en rotation} : grâce aux angles articulaires calculés par produit scalaire.
+    \item \textbf{Invariant en translation} : grâce à la normalisation par rapport au poignet.
+    \item \textbf{Invariant en échelle} : grâce à la normalisation par la distance poignet--majeur.
+\end{itemize}
+
+\subsection{Calcul des 15 Angles Articulaires}
+
+Pour chaque triplet d'articulations $(A, B, C)$, l'angle au point $B$ est calculé par :
+
+\begin{equation}
+    \theta = \arccos\left(\frac{\vec{BA} \cdot \vec{BC}}{|\vec{BA}| \cdot |\vec{BC}|}\right)
+\end{equation}
+
+Les 15 triplets couvrent les 5 doigts (3 angles par doigt) :
+
+\begin{lstlisting}[style=python, caption={Calcul des angles articulaires}]
+ANGLE_TRIPLETS = [
+    (0,1,2), (1,2,3), (2,3,4),       # Pouce
+    (0,5,6), (5,6,7), (6,7,8),       # Index
+    (0,9,10), (9,10,11), (10,11,12), # Majeur
+    (0,13,14), (13,14,15), (14,15,16), # Annulaire
+    (0,17,18), (17,18,19), (18,19,20), # Auriculaire
+]
+
+def compute_joint_angles(landmarks):
+    angles = np.zeros(15, dtype=np.float32)
+    for i, (a, b, c) in enumerate(ANGLE_TRIPLETS):
+        v1 = landmarks[a] - landmarks[b]
+        v2 = landmarks[c] - landmarks[b]
+        cos = np.dot(v1, v2) / (np.linalg.norm(v1)
+              * np.linalg.norm(v2) + 1e-8)
+        angles[i] = np.arccos(np.clip(cos, -1.0, 1.0))
+    return angles
+\end{lstlisting}
+
+\subsection{Normalisation des 63 Coordonnées}
+
+Les 21 landmarks sont centrés sur le poignet (landmark 0) et normalisés par la distance entre le poignet et le MCP du majeur (landmark 9) :
+
+\begin{equation}
+    \hat{p}_i = \frac{p_i - p_0}{|p_9 - p_0|}
+\end{equation}
+
+Cela produit $21 \times 3 = 63$ valeurs invariantes en position et en échelle.
+
+\subsection{Vecteur Final}
+
+Le vecteur de caractéristiques final est la concaténation :
+\begin{equation}
+    \mathbf{f} = [\underbrace{\theta_1, \ldots, \theta_{15}}_{\text{15 angles}}, \underbrace{\hat{x}_0, \hat{y}_0, \hat{z}_0, \ldots, \hat{x}_{20}, \hat{y}_{20}, \hat{z}_{20}}_{\text{63 coordonnées normalisées}}] \in \mathbb{R}^{78}
+\end{equation}
+
+\subsection{Fenêtre Temporelle Adaptative}
+
+Pour les gestes dynamiques, une fenêtre glissante de 15 à 45 frames est maintenue. La taille de la fenêtre s'adapte à la vitesse du geste, mesurée par le flux optique (Farneback) :
+
+\begin{lstlisting}[style=python, caption={Fenêtre adaptative basée sur le flux optique}]
+def update_window_size(self, optical_flow_magnitude):
+    if optical_flow_magnitude > 5.0:
+        self.current_window_size = 15  # Geste rapide
+    elif optical_flow_magnitude < 1.0:
+        self.current_window_size = 45  # Geste lent
+    else:
+        t = (optical_flow_magnitude - 1.0) / 4.0
+        self.current_window_size = int(45 - t * 30)
+\end{lstlisting}
