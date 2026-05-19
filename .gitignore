@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+venv/
+data/asl_features.npz
+models/hand_landmarker.task
+debug_model.py

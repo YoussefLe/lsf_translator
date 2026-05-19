@@ -1,0 +1,9 @@
+opencv-python>=4.10.0
+mediapipe==0.10.35
+tensorflow==2.21.0
+numpy>=1.26.0
+scipy>=1.13.0
+flask>=3.0.0
+pyttsx3>=2.90
+paho-mqtt>=2.1.0
+scikit-learn>=1.4.0

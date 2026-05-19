@@ -1,0 +1,27 @@
+"""Global configuration for LSF Translator."""
+
+CAMERA_ID = 0
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+FPS = 30
+BUFFER_SIZE = 64
+
+# Feature engineering
+NUM_LANDMARKS = 21
+STATIC_FEATURE_DIM = 78
+SEQUENCE_LENGTH = 30
+MIN_WINDOW = 15
+MAX_WINDOW = 45
+
+# Model
+LSTM_UNITS = 128
+LSTM_LAYERS = 2
+BATCH_SIZE = 32
+EPOCHS = 50
+QUANTIZATION = "INT8"  # INT8, FP16, FP32
+
+# Accessibility
+FLASK_PORT = 5000
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TOPIC = "lsf/predictions"
