@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from config import SEQUENCE_LENGTH
 from modules.acquisition_pi import CameraCapture
-from modules.pose_estimation import PoseEstimator
+from modules.pose_estimation_pi import PoseEstimator
 from modules.feature_engineering import FeatureExtractor
 from modules.accessibility import AccessibilityInterface
 
