@@ -24,18 +24,27 @@ else:
 
 
 class TFLiteClassifierPi:
-    """TFLite inference using tflite-runtime (lightweight, no full TF needed)."""
+    """TFLite inference using best available runtime."""
 
     def __init__(self, model_path):
-        try:
-            import tflite_runtime.interpreter as tflite
-            self.interpreter = tflite.Interpreter(model_path=model_path, num_threads=4)
-        except ImportError:
-            import tensorflow as tf
-            self.interpreter = tf.lite.Interpreter(model_path=model_path, num_threads=4)
+        self.interpreter = self._make_interpreter(model_path)
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
+
+    def _make_interpreter(self, model_path):
+        try:
+            from tflite_runtime.interpreter import Interpreter
+            return Interpreter(model_path=model_path, num_threads=4)
+        except ImportError:
+            pass
+        try:
+            from ai_edge_litert import interpreter as litert
+            return litert.Interpreter(model_path=model_path)
+        except (ImportError, AttributeError):
+            pass
+        import tensorflow as tf
+        return tf.lite.Interpreter(model_path=model_path, num_threads=4)
 
     def predict(self, features):
         input_data = features[np.newaxis].astype(self.input_details[0]["dtype"])

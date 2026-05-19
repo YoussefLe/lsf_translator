@@ -35,16 +35,21 @@ def ensure_models():
 def _load_interpreter(model_path):
     """Load TFLite interpreter with best available runtime."""
     try:
-        import tflite_runtime.interpreter as tflite
-        return tflite.Interpreter(model_path=model_path, num_threads=4)
+        from tflite_runtime.interpreter import Interpreter
+        return Interpreter(model_path=model_path, num_threads=4)
     except ImportError:
+        pass
+    try:
+        from ai_edge_litert import interpreter as litert
+        return litert.Interpreter(model_path=model_path)
+    except (ImportError, AttributeError):
         pass
     try:
         import tensorflow as tf
         return tf.lite.Interpreter(model_path=model_path, num_threads=4)
     except ImportError:
         pass
-    raise RuntimeError("No TFLite runtime available. Install tflite-runtime.")
+    raise RuntimeError("No TFLite runtime found. Install one of: ai-edge-litert, tflite-runtime, or tensorflow")
 
 
 class PoseEstimator:
