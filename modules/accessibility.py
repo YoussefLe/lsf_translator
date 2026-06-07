@@ -1,6 +1,7 @@
 """Module 5: Accessibility Interface - TTS, Flask MJPEG stream, MQTT publisher."""
 
 import threading
+import queue
 import time
 import cv2
 import numpy as np
@@ -13,25 +14,24 @@ from config import FLASK_PORT, MQTT_BROKER, MQTT_PORT, MQTT_TOPIC
 # ─── Text-to-Speech ──────────────────────────────────────────────────────────
 
 class TTSEngine:
-    """Local TTS using pyttsx3 (espeak-ng backend) in a separate thread."""
+    """Local TTS using pyttsx3 with a queue — no word is ever skipped."""
 
     def __init__(self):
-        self._engine = pyttsx3.init()
-        self._engine.setProperty("rate", 150)
-        self._lock = threading.Lock()
-        self._last_spoken = ""
+        self._queue = queue.Queue()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
 
     def speak(self, text):
-        """Speak text asynchronously (skip if same as last)."""
-        if text == self._last_spoken or not text:
-            return
-        self._last_spoken = text
-        threading.Thread(target=self._say, args=(text,), daemon=True).start()
+        if text:
+            self._queue.put(text)
 
-    def _say(self, text):
-        with self._lock:
-            self._engine.say(text)
-            self._engine.runAndWait()
+    def _worker(self):
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 150)
+        while True:
+            text = self._queue.get()
+            engine.say(text)
+            engine.runAndWait()
 
 
 # ─── MQTT Publisher ───────────────────────────────────────────────────────────

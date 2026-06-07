@@ -31,6 +31,7 @@ def normalize_landmarks(landmarks):
     centered = landmarks - wrist
     scale = np.linalg.norm(centered[9]) + 1e-8  # wrist to middle finger MCP
     normalized = centered / scale
+    """Normalisation par distance poignet-majeur"""
     return normalized.flatten()  # 63 values
 
 
@@ -40,7 +41,7 @@ def compute_static_features(landmarks):
     coords = normalize_landmarks(landmarks)
     return np.concatenate([angles, coords])
 
-
+""" activation fenetre glissante 30 fr"""
 class FeatureExtractor:
     """Maintains sliding window for dynamic gesture features with adaptive window size."""
 
@@ -82,7 +83,7 @@ class FeatureExtractor:
 
     def is_ready(self):
         """Check if enough frames for dynamic classification."""
-        return len(self.window) >= self.current_window_size
+        return len(self.window) >= MIN_WINDOW
 
     def reset(self):
         self.window.clear()
