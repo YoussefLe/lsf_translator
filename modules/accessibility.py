@@ -26,8 +26,14 @@ class TTSEngine:
             self._queue.put(text)
 
     def _worker(self):
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 150)
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 150)
+        except Exception as e:
+            print(f"[TTS] Disabled: {e}")
+            while True:
+                self._queue.get()  # drain queue silently
+            return
         while True:
             text = self._queue.get()
             engine.say(text)
