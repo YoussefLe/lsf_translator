@@ -26,31 +26,11 @@ class TTSEngine:
             self._queue.put(text)
 
     def _worker(self):
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 150)
-            # Test rapide pour vérifier que le moteur fonctionne
-            engine.say(" ")
-            engine.runAndWait()
-            use_pyttsx3 = True
-        except Exception as e:
-            print(f"[TTS] pyttsx3 failed ({e}), using espeak directly")
-            use_pyttsx3 = False
-
+        import subprocess
         while True:
             text = self._queue.get()
-            if not text:
-                continue
-            if use_pyttsx3:
-                try:
-                    engine.say(text)
-                    engine.runAndWait()
-                except Exception:
-                    use_pyttsx3 = False
-            if not use_pyttsx3:
-                import subprocess
-                subprocess.run(["espeak", "-v", "fr", "-s", "140", text],
-                               capture_output=True)
+            if text:
+                subprocess.run(["espeak", "-v", "fr", "-s", "140", text])
 
 
 # ─── MQTT Publisher ───────────────────────────────────────────────────────────
